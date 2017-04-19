@@ -644,23 +644,18 @@ local.templateApidocHtml = '\
             // init moduleDict child
             local.apidocModuleDictAdd(options, options.moduleDict);
             // init moduleExtraDict
-            local.fs.readdirSync(options.dir).sort().forEach(function (file) {
-                if ((/^(?:\.git|node_modules|tmp)$/).test(file)) {
-                    return;
-                }
-                try {
-                    local.fs.readdirSync(options.dir + '/' + file)
-                        .sort()
-                        .forEach(function (file2) {
-                            file2 = file + '/' + file2;
-                            options.libFileList.push(file2);
-                        });
-                } catch (errorCaught) {
-                    options.libFileList.push(file);
-                }
-            });
             module = options.moduleExtraDict[options.env.npm_package_name] =
                 options.moduleExtraDict[options.env.npm_package_name] || {};
+            [1, 2, 3].forEach(function (depth) {
+                options.libFileList = options.libFileList.concat(
+                    toString(local.child_process.execSync('find "' + options.dir + '" -depth ' +
+                        depth + ' -name "*.js" -type f | sort | head -n 4096'))
+                        .split('\n')
+                        .map(function (file) {
+                            return file.replace(options.dir + '/', '');
+                        })
+                );
+            });
             options.libFileList.some(function (file) {
                 try {
                     tmp = {};
@@ -678,8 +673,8 @@ local.templateApidocHtml = '\
                         tmp.skip = local.path.extname(file) !== '.js' ||
                             file.indexOf(options.packageJson.main) >= 0 ||
                             new RegExp('(?:\\b|_)(?:archive|artifact|asset|' +
-                                'bin|bower_components|build|' +
-                                'cli|coverage|' +
+                                'bower_components|build|' +
+                                'coverage|' +
                                 'doc|dist|' +
                                 'example|external|' +
                                 'fixture|' +
@@ -825,6 +820,7 @@ local.templateApidocHtml = '\
     /* istanbul ignore next */
     case 'node':
         // require modules
+        local.child_process = require('child_process');
         local.fs = require('fs');
         local.path = require('path');
         // run the cli
@@ -12030,7 +12026,10 @@ return Utf8ArrayToStr(bff);
                 onError();
                 return;
             }
-            local.objectSetDefault(options, { blacklistDict: local });
+            local.objectSetDefault(options, {
+                blacklistDict: local,
+                require: local.requireInSandbox
+            });
             // create apidoc.html
             local.fsWriteFileWithMkdirpSync(
                 local.env.npm_config_dir_build + '/apidoc.html',
@@ -12178,6 +12177,7 @@ return Utf8ArrayToStr(bff);
                 dir: local.env.npm_package_buildCustomOrg,
                 modeNoApidoc: true,
                 modulePathList: options.modulePathList,
+                require: local.requireInSandbox,
                 template: local.assetsDict['/assets.readmeCustomOrg.' + local.env.GITHUB_ORG +
                     '.template.md']
             });
@@ -14076,6 +14076,10 @@ instruction\n\
         $ PORT=8081 node assets.app.js\n\
     3. play with the browser-demo on http://127.0.0.1:8081\n\
 */\n\
+\n\
+\n\
+\n\
+/*jslint maxlen: 256 */\n\
 ';
 /* jslint-ignore-end */
                 case 'local._stateInit':
@@ -14128,6 +14132,54 @@ instruction\n\
                 local.jslintAndPrintConditional(local.assetsDict[key], key);
             });
             return module.exports;
+        };
+
+        local.requireInSandbox = function (file) {
+        /*
+         * this function will require the file in a sandbox-lite env
+         */
+            var exports, mockDict, mockList, tmp;
+            exports = {};
+            mockList = [
+                [ local.global, {
+                    setImmediate: local.nop,
+                    setInterval: local.nop,
+                    setTimeout: local.nop
+                }]
+            ];
+            [
+                [local, 'child_process'],
+                [local, 'cluster'],
+                [local, 'fs'],
+                [local, 'http'],
+                [local, 'https'],
+                [local, 'net'],
+                [local, 'repl'],
+                [local.global, 'process'],
+                [process, 'stdin']
+            ].forEach(function (element) {
+                tmp = element[0][element[1]];
+                mockDict = {};
+                Object.keys(tmp).forEach(function (key) {
+                    if (typeof tmp[key] === 'function' && !(
+                            /^(?:fs\.Read|fs\.read|process\.binding|process\.dlopen)/
+                        ).test(element[1] + '.' + key)) {
+                        mockDict[key] = function () {
+                            return;
+                        };
+                        // coverage-hack
+                        mockDict[key]();
+                    }
+                });
+                mockList.push([ module, mockDict ]);
+            });
+            local.testMock(mockList, function (onError) {
+                local.tryCatchOnError(function () {
+                    exports = require(file);
+                }, console.error);
+                onError();
+            }, local.onErrorThrow);
+            return exports;
         };
 
         local.serverRespondDefault = function (request, response, statusCode, error) {
@@ -15413,6 +15465,7 @@ instruction\n\
         local.Module = require('module');
         local.__require = require;
         local.child_process = require('child_process');
+        local.cluster = require('cluster');
         local.fs = require('fs');
         local.http = require('http');
         local.https = require('https');
